@@ -3,8 +3,8 @@ OpenFlow Exercise - Sample File
 This code is based on the official OpenFlow tutorial code.
 """
 
-from pox import core
-from pox.openflow import libopenflow_01 as of
+from pox.core import core
+import pox.openflow.libopenflow_01 as of
 
 log = core.getLogger()
 
@@ -19,6 +19,9 @@ class Tutorial (object):
         # This binds our PacketIn event listener
         connection.addListeners(self)
 
+        # Hold Port<->Mac hash table.
+        self.mac_port_mapping = {}
+
     def _handle_PacketIn (self, event):
         """
         Handles packet in messages from the switch.
@@ -31,7 +34,7 @@ class Tutorial (object):
 
         packet_in = event.ofp  # packet_in is the OpenFlow packet sent by the switch
 
-        self.act_like_hub(packet, packet_in)
+        self.act_like_switch(packet, packet_in)
 
     def send_packet (self, buffer_id, raw_data, out_port, in_port):
         """
@@ -65,6 +68,30 @@ class Tutorial (object):
         # Send message to switch
         self.connection.send(msg)
 
+    def resend_packet(self, packet_in, out_port):
+        """
+        """
+        msg = of.ofp_packet_out()
+        msg.data = packet_in
+        action = of.ofp_action_output(port=out_port)
+        msg.actions.append(action)
+        log.debug("Sending packet to port %i" % out_port)
+        self.connection.send(msg)
+
+    def install_rule(self, src_mac, dst_mac, in_port, out_port, packet_in):
+        """
+        """
+        msg = of.ofp_flow_mod()
+        msg.data = packet_in
+        msg.idle_timeout = 10
+        msg.hard_timeout = 30
+        msg.match.dl_src = src_mac
+        msg.match.dl_dst = dst_mac
+        action = of.ofp_action_output(port=out_port)
+        msg.actions.append(action)
+        log.debug("Instaling flow %s.%i -> %s.%i" % (src_mac, in_port, dst_mac, out_port))
+        return msg
+
     def act_like_hub (self, packet, packet_in):
         """
         Implement hub-like behavior -- send all packets to all ports besides
@@ -85,6 +112,25 @@ class Tutorial (object):
         # log.debug('Flooding packet')
         # self.send_packet(packet_in.buffer_id, packet_in.data, of.OFPP_FLOOD, packet_in.in_port)
         # self.add_flood_rule_to_flowtable(packet_in.buffer_id, packet_in.data, packet_in.in_port)
+
+    def act_like_switch (self, packet, packet_in):
+        """
+        @summary: Implement switch-like behavior, learn MAC addresses of peer devices.
+        @param packet:  packet.src, packet.dst
+        @param packet_in: packet_in.port, packet_in.buffer_id, packet_in.data
+        """
+        src_mac = str(packet.src)
+        dst_mac = str(packet.dst)
+        in_port = packet_in.in_port
+        self.mac_port_mapping[src_mac] = in_port
+        if (dst_mac in self.mac_port_mapping):
+            out_port = self.mac_port_mapping[dst_mac]
+            msg = self.install_rule(src_mac, dst_mac, in_port, out_port, packet_in)
+            log.debug("Sending packet to port %i only" % self.mac_port_mapping[msg.match.dl_dst])
+            self.connection.send(msg)
+        else:
+            log.debug("Flooding packet: %s.%i -> %s.%i" % (src_mac, in_port, dst_mac, of.OFPP_ALL))
+            self.resend_packet(packet_in, of.OFPP_ALL)
 
 def launch ():
     """
