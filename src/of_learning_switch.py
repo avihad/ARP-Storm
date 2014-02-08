@@ -44,11 +44,6 @@ class Tutorial (object):
         The "in_port" is the port number that packet arrived on.  Use
         OFPP_NONE if you're generating this packet.
         """
-        # We tell the switch to take the packet with id buffer_if from in_port
-        # and send it to out_port
-        # If the switch did not specify a buffer_id, it must have specified
-        # the raw data of the packet, so in this case we tell it to send
-        # the raw data
         msg = of.ofp_packet_out()
         msg.in_port = in_port
         if buffer_id != -1 and buffer_id is not None:
@@ -70,48 +65,30 @@ class Tutorial (object):
 
     def resend_packet(self, packet_in, out_port):
         """
+        @summary: Resend a packet, this time with a new outgoing port on switch
+        @param packet_in: holds information about the incoming packet
+        @param out_port: an int representing the outgoing port on switch
         """
         msg = of.ofp_packet_out()
-        msg.data = packet_in
-        action = of.ofp_action_output(port=out_port)
-        msg.actions.append(action)
-        log.debug("Sending packet to port %i" % out_port)
+        msg.in_port = of.OFPP_NONE
+        msg.actions.append(of.ofp_action_output(port=out_port))
+        msg.buffer_id = packet_in.buffer_id
+        if (out_port != of.OFPP_ALL):
+            log.debug("Sending packet through port %i on the switch" % out_port)
         self.connection.send(msg)
 
-    def install_rule(self, src_mac, dst_mac, in_port, out_port, packet_in):
+    def install_rule(self, in_port, packet):
         """
+        @summary: Once a port of a device is learned, a rule is created
+        @param in_port: an int that represents the incoming port on switch
+        @param packet: a local copy of the packet that initiated this rule install
         """
         msg = of.ofp_flow_mod()
-        msg.data = packet_in
-        msg.idle_timeout = 10
-        msg.hard_timeout = 30
-        msg.match.dl_src = src_mac
-        msg.match.dl_dst = dst_mac
-        action = of.ofp_action_output(port=out_port)
-        msg.actions.append(action)
-        log.debug("Instaling flow %s.%i -> %s.%i" % (src_mac, in_port, dst_mac, out_port))
-        return msg
-
-    def act_like_hub (self, packet, packet_in):
-        """
-        Implement hub-like behavior -- send all packets to all ports besides
-        the input port.
-        """
-
-        # We want to output to all ports -- we do that using the special
-        # of.OFPP_FLOOD port as the output port.  (We could have also used
-        # of.OFPP_ALL.)
-
-        # Useful information on packet_in:
-        # packet_in.buffer_id   - The ID of the buffer (packet data) on the switch
-        # packet_in.data        - The raw data as sent by the switch
-        # packet_in.in_port     - The port on which the packet arrived at the switch
-
-        # Should call self.send_packet( ... )
-
-        # log.debug('Flooding packet')
-        # self.send_packet(packet_in.buffer_id, packet_in.data, of.OFPP_FLOOD, packet_in.in_port)
-        # self.add_flood_rule_to_flowtable(packet_in.buffer_id, packet_in.data, packet_in.in_port)
+        msg.match.dl_src = packet.src
+        msg.match.dl_dst = packet.dst
+        msg.actions.append(of.ofp_action_output(port=in_port))
+        log.debug("Creating a new flow, MAC %s is connected to PORT %i on the switch" % (str(packet.src), in_port))
+        self.connection.send(msg)
 
     def act_like_switch (self, packet, packet_in):
         """
@@ -125,9 +102,8 @@ class Tutorial (object):
         self.mac_port_mapping[src_mac] = in_port
         if (dst_mac in self.mac_port_mapping):
             out_port = self.mac_port_mapping[dst_mac]
-            msg = self.install_rule(src_mac, dst_mac, in_port, out_port, packet_in)
-            log.debug("Sending packet to port %i only" % self.mac_port_mapping[msg.match.dl_dst])
-            self.connection.send(msg)
+            self.install_rule(in_port, packet)
+            self.resend_packet(packet_in, out_port)
         else:
             log.debug("Flooding packet: %s.%i -> %s.%i" % (src_mac, in_port, dst_mac, of.OFPP_ALL))
             self.resend_packet(packet_in, of.OFPP_ALL)
